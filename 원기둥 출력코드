@@ -1,0 +1,154 @@
+import rclpy
+import DR_init
+import time
+import math
+
+from dsr_example.simple.gripper_drl_controller import GripperController
+
+# --------------------------------
+# 로봇 설정
+# --------------------------------
+ROBOT_ID = "dsr01"
+ROBOT_MODEL = "e0509"
+
+VEL = 50
+ACC = 50
+DRAW_VEL = 20
+
+# --------------------------------
+# 원기둥 출력 설정
+# --------------------------------
+CYLINDER_RADIUS = 25      # mm
+Z_PER_TURN = 1.2          # 1바퀴당 Z 증가량
+NUMBER_OF_TURNS = 20       # 총 회전 수
+POINTS_PER_TURN = 60      # 원 한 바퀴 분할 수 (클수록 부드러움)
+
+# --------------------------------
+# 원기둥 스파이럴 출력
+# --------------------------------
+def draw_cylinder_spiral(
+    movel, posx, node, gripper,
+    start_pos, radius, turns, z_per_turn,
+    points_per_turn, vel, acc
+):
+    cx, cy, z, rx, ry, rz = start_pos
+
+    total_points = turns * points_per_turn
+    z_step = z_per_turn / points_per_turn
+    angle_step = 2.0 * math.pi / points_per_turn
+
+    node.get_logger().info(
+        f"원기둥 스파이럴 시작 | 반지름={radius}mm"
+    )
+
+    # 시작 위치 (원 위)
+    x0 = cx + radius
+    y0 = cy
+    movel(posx(x0, y0, z, rx, ry, rz), vel, acc)
+
+    # 그리퍼 CLOSE (펜 쥠)
+    node.get_logger().info("그리퍼 CLOSE (펜 고정)")
+    gripper.move(643)
+    time.sleep(0.5)
+
+    angle = 0.0
+
+    for i in range(total_points):
+        angle += angle_step
+        z += z_step
+
+        x = cx + radius * math.cos(angle)
+        y = cy + radius * math.sin(angle)
+
+        movel(
+            posx(x, y, z, rx, ry, rz),
+            DRAW_VEL,
+            acc
+        )
+
+        if i % points_per_turn == 0:
+            node.get_logger().info(
+                f"Turn {i // points_per_turn + 1}/{turns} | Z={z:.2f}mm"
+            )
+
+    # 그리퍼 OPEN (펜 놓기)
+    node.get_logger().info("그리퍼 OPEN (펜 해제)")
+    gripper.move(633)
+    time.sleep(0.5)
+
+    node.get_logger().info("원기둥 출력 완료")
+
+# --------------------------------
+# 메인
+# --------------------------------
+def main(args=None):
+    rclpy.init(args=args)
+
+    DR_init.__dsr__id = ROBOT_ID
+    DR_init.__dsr__model = ROBOT_MODEL
+
+    node = rclpy.create_node(
+        "dsr_cylinder_spiral",
+        namespace=ROBOT_ID
+    )
+    DR_init.__dsr__node = node
+
+    from DSR_ROBOT2 import (
+        movej, movel, posj, posx,
+        set_robot_mode, ROBOT_MODE_AUTONOMOUS, wait
+    )
+
+    set_robot_mode(ROBOT_MODE_AUTONOMOUS)
+
+    # --------------------------------
+    # 그리퍼 초기화
+    # --------------------------------
+    gripper = GripperController(node=node, namespace=ROBOT_ID)
+
+    if not gripper.initialize():
+        node.get_logger().error("그리퍼 초기화 실패")
+        return
+
+    node.get_logger().info("그리퍼 wake-up")
+    wait(2)
+
+    # --------------------------------
+    # 위치 설정
+    # --------------------------------
+    JOINT_PICK_POS = [0, 0, 90, 90, 90, 0]
+    START_POS = [350, -100, 45, 86, 93, 89]  # 중심점
+
+    try:
+        node.get_logger().info("홈 위치 이동")
+        movej(posj(*JOINT_PICK_POS), VEL, ACC)
+
+        node.get_logger().info("출력 시작 위치 이동")
+        movel(posx(*START_POS), VEL, ACC)
+
+        draw_cylinder_spiral(
+            movel,
+            posx,
+            node,
+            gripper,
+            START_POS,
+            CYLINDER_RADIUS,
+            NUMBER_OF_TURNS,
+            Z_PER_TURN,
+            POINTS_PER_TURN,
+            VEL,
+            ACC
+        )
+
+    except Exception as e:
+        node.get_logger().error(f"오류 발생: {e}")
+
+    finally:
+        node.get_logger().info("홈 복귀")
+        movej(posj(*JOINT_PICK_POS), VEL, ACC)
+
+        gripper.terminate()
+        rclpy.shutdown()
+
+# --------------------------------
+if __name__ == "__main__":
+    main()
